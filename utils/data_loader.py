@@ -24,6 +24,15 @@ class SDFDataset(Dataset):
         sdf_points = torch.from_numpy(sdf_data['points']).float()
         sdf_values = torch.from_numpy(sdf_data['sdf']).float()
         sdf_grads = torch.from_numpy(sdf_data['grad']).float()
+
+        # 随机采样 1024 个 SDF 点
+        num_samples = sdf_points.shape[0]
+        sample_num = min(1024, num_samples)
+        indices = torch.randperm(num_samples)[:sample_num]
+        sdf_points = sdf_points[indices]
+        sdf_values = sdf_values[indices]
+        sdf_grads = sdf_grads[indices]
+        
         return {
             'pointcloud': points,
             'normals': normals,
@@ -33,6 +42,7 @@ class SDFDataset(Dataset):
         }
     
 if __name__ == "__main__":
+    print("Testing SDFDataset...")
     data_dir = '../data'
     dataset = SDFDataset(data_dir)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
@@ -42,4 +52,4 @@ if __name__ == "__main__":
         print("SDF points shape:", batch["sdf_points"].shape)
         print("SDF values shape:", batch["sdf_values"].shape)
         print("SDF gradients shape:", batch["sdf_grads"].shape)
-        break
+        

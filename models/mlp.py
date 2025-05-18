@@ -17,7 +17,6 @@ class MLP(nn.Module):
             self.layers.append(nn.Linear(hidden_dim, hidden_dim))
         self.layers.append(nn.Linear(hidden_dim, output_dim))
         
-
     def forward(self, x):
         for i in range(self.num_layers - 1):
             x = self.layers[i](x)
