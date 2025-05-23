@@ -16,7 +16,7 @@ def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('Point2MeshSDF')
     parser.add_argument('--batchsize', type=int, default=1, help='batch size in training')
-    parser.add_argument('--epoch',  default=300, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch',  default=200, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
     parser.add_argument('--gpu', type=str, default='0', help='specify gpu device')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate of learning rate')
@@ -71,8 +71,19 @@ def main(args):
         torch.cuda.manual_seed_all(seed)
 
     # --- MODEL LOADING ---
-    
-    model = MLP(input_dim=3, hidden_dim=256, num_layers=8).to(device)
+    config = {
+        "latent_size": 0,
+        "dims": [512] * 8,
+        "dropout": [2, 4, 6],
+        "dropout_prob": 0.2,
+        "norm_layers": [1, 2, 3, 4, 5, 6],
+        "latent_in": [8],
+        "weight_norm": True,
+        "xyz_in_all": True,
+        "use_tanh": False,
+        "latent_dropout": False
+    }
+    model = MLP(**config).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=args.learning_rate,
@@ -80,7 +91,7 @@ def main(args):
         eps=1e-08,
         weight_decay=args.decay_rate
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.7)
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.7)
     global_epoch = 0
     global_step = 0
     min_loss = float('inf')
@@ -97,17 +108,40 @@ def main(args):
             sdf_values = data['sdf_values'].to(device)
             sdf_grads = data['sdf_grads'].to(device)
 
+            if batch_id == 0 and epoch == 0:
+                print("sdf_points min:", sdf_points.min().item(), "max:", sdf_points.max().item())
+                print("sdf_values min:", sdf_values.min().item(), "max:", sdf_values.max().item())
+                print("sdf_grads min:", sdf_grads.min().item(), "max:", sdf_grads.max().item())
+                print("sdf_values mean:", sdf_values.mean().item(), "median:", sdf_values.median().item())
+
             optimizer.zero_grad()
 
+            if sdf_points.dim() == 3:
+                sdf_points = sdf_points.view(-1, 3)
             sdf_predicted = model(sdf_points)
+            sdf_values = sdf_values.view(-1, 1)  # 变成 [16384, 1]
+            sdf_grads = sdf_grads.view(-1, 3)  # 变成 [16384, 3]
+            # print("sdf_predicted shape:", sdf_predicted.shape)
+            # print("sdf_values shape:", sdf_values.shape)
+            # print("sdf_predicted min:", sdf_predicted.min().item(), "max:", sdf_predicted.max().item())
             grad_predicted = compute_sdf_gradient(sdf_points, sdf_predicted)
-            loss = sdf_loss(sdf_predicted, sdf_values, grad_predicted, sdf_grads, lambda_param=0.1)
+            # print("grad_predicted shape:", grad_predicted.shape)
+            # print("sdf_grads shape:", sdf_grads.shape)
+            # sdf_loss_val = torch.mean((sdf_predicted - sdf_values) ** 2)
+            # grad_loss_val = torch.mean((grad_predicted - sdf_grads) ** 2)
+            # print(f"sdf_loss: {sdf_loss_val.item()}, grad_loss: {grad_loss_val.item()}")
+            loss = sdf_loss(sdf_predicted, sdf_values, grad_predicted, sdf_grads, lambda_param=0.01)
 
             loss.backward()
+            # for name, param in model.named_parameters():
+            #     if param.grad is not None:
+            #         print(f"{name} grad mean: {param.grad.abs().mean().item():.6e}, grad max: {param.grad.abs().max().item():.6e}")
+            #     else:
+            #         print(f"{name} grad is None")
             optimizer.step()
             global_step += 1
 
-        scheduler.step()
+        # scheduler.step()
         
         # --- TESTING ---
         if loss < min_loss and epoch > 5:

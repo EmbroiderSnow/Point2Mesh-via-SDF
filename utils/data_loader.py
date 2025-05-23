@@ -25,10 +25,20 @@ class SDFDataset(Dataset):
         sdf_values = torch.from_numpy(sdf_data['sdf']).float()
         sdf_grads = torch.from_numpy(sdf_data['grad']).float()
 
-        # 随机采样 1024 个 SDF 点
+        # 随机采样 SDF 
         num_samples = sdf_points.shape[0]
-        sample_num = min(1024, num_samples)
-        indices = torch.randperm(num_samples)[:sample_num]
+        sample_num = min(16384, num_samples)
+        pos_indices = (sdf_values > 0).nonzero(as_tuple=True)[0]
+        neg_indices = (sdf_values < 0).nonzero(as_tuple=True)[0]
+        num_pos = min(len(pos_indices), sample_num // 2)
+        num_neg = min(len(neg_indices), sample_num // 2)
+        sampled_pos = pos_indices[torch.randperm(len(pos_indices))[:num_pos]]
+        sampled_neg = neg_indices[torch.randperm(len(neg_indices))[:num_neg]]
+        indices = torch.cat([sampled_pos, sampled_neg])
+        # 若数量不足，再随机补齐
+        if len(indices) < sample_num:
+            rest = torch.randperm(num_samples)[:sample_num - len(indices)]
+            indices = torch.cat([indices, rest])
         sdf_points = sdf_points[indices]
         sdf_values = sdf_values[indices]
         sdf_grads = sdf_grads[indices]

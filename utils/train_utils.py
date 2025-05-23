@@ -57,17 +57,3 @@ def save_checkpoint(epoch, loss, model, optimizer, path, modelnet='checkpoint'):
         'optimizer_state_dict': optimizer.state_dict(),
     }
     torch.save(state, savepath)
-
-def test(model, test_loader, device):
-    for batch_id, data in enumerate(test_loader):
-        sdf_points = data['sdf_points'].clone().detach().requires_grad_(True).to(device)
-        sdf_values = data['sdf_values'].to(device)
-        sdf_grads = data['sdf_grads'].to(device)
-
-        with torch.no_grad():
-            sdf_predicted = model(sdf_points)
-            grad_predicted = compute_sdf_gradient(sdf_points, sdf_predicted)
-            loss = sdf_loss(sdf_predicted, sdf_values, grad_predicted, sdf_grads, lambda_param=0.1)
-            print(f"Test Loss: {loss.item()}")
-
-    return loss.item()

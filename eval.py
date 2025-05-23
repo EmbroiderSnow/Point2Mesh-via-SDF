@@ -9,6 +9,8 @@ from pathlib import Path
 import datetime
 import logging
 import sys
+from utils.data_loader import SDFDataset
+from torch.utils.data import DataLoader
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Test SDF prediction and reconstruct mesh using Marching Cubes")
@@ -16,8 +18,9 @@ def parse_args():
     parser.add_argument('--gpu', type=str, default='0', help='specify gpu device')
     parser.add_argument('--batch_size', type=int, default=1024, help='batch size for evaluation')
     parser.add_argument('--checkpoint', type=str, default=None, help='checkpoint')
-    parser.add_argument("--output_path", type=str, default="output", help="Path to save the reconstructed mesh (output.obj)")
+    parser.add_argument("--output_path", type=str, default="./output", help="Path to save the reconstructed mesh (output.obj)")
     parser.add_argument("--grid_resolution", type=int, default=128, help="Resolution of the 3D grid for Marching Cubes")
+    parser.add_argument("--test", type=bool, default=False, help="Test mode")
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -51,7 +54,19 @@ if __name__ == '__main__':
     logger.info(args)
 
     # --- MODEL LOADING ---
-    model = MLP().to(device)  # Initialize the model
+    config = {
+        "latent_size": 0,
+        "dims": [512] * 8,
+        "dropout": [2, 4, 6],
+        "dropout_prob": 0.2,
+        "norm_layers": [1, 2, 3, 4, 5, 6],
+        "latent_in": [8],
+        "weight_norm": True,
+        "xyz_in_all": True,
+        "use_tanh": False,
+        "latent_dropout": False
+    }
+    model = MLP(**config).to(device)  # Initialize the model
     if args.checkpoint is not None:
         print('Load CheckPoint...')
         logger.info('Load CheckPoint')
@@ -63,6 +78,18 @@ if __name__ == '__main__':
         sys.exit(0)
         start_epoch = 0
     
+    if args.test:
+        print('Test mode activated.')
+        logger.info('Test mode activated.')
+        # --- DATA LOADING ---
+        logger.info('Loading dataset ...')
+        DATA_PATH = './data'
+        # Considering that the dataset is too small, we use Leave-One-Out Cross-Validation to divide the dataset
+        DATASET = SDFDataset(DATA_PATH)
+        
+        trainDataLoader = DataLoader(DATASET, batch_size=1, shuffle=True, num_workers=4)
+        test_on_training_points(model, trainDataLoader, device)
+
     # --- EVAL ---
     logger.info('Start evaluating...')
     print('Start evaluating...')
@@ -80,6 +107,7 @@ if __name__ == '__main__':
     mesh = reconstruct_mesh(model, grid_points, args.grid_resolution, args.batch_size, device)
 
     # Save mesh
+    os.mkdir(args.output_path) if not os.path.exists(args.output_path) else None
     output_file = os.path.join(args.output_path, "output.obj")
     mesh.export(output_file)
     logger.info(f"Reconstructed mesh saved to {output_file}")

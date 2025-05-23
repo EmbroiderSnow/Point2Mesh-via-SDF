@@ -3,42 +3,122 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MLP(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=256, output_dim=1, num_layers=8):
+    def __init__(
+        self,
+        latent_size,
+        dims,
+        dropout=None,
+        dropout_prob=0.0,
+        norm_layers=(),
+        latent_in=(),
+        weight_norm=False,
+        xyz_in_all=None,
+        use_tanh=False,
+        latent_dropout=False,
+    ):
         super(MLP, self).__init__()
 
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dim
-        self.output_dim = output_dim
-        self.num_layers = num_layers
+        def make_sequence():
+            return []
 
-        self.layers = nn.ModuleList()
-        self.layers.append(nn.Linear(input_dim, hidden_dim))
-        for _ in range(num_layers - 2):
-            self.layers.append(nn.Linear(hidden_dim, hidden_dim))
-        self.layers.append(nn.Linear(hidden_dim, output_dim))
-        
-    def forward(self, x):
-        for i in range(self.num_layers - 1):
-            x = self.layers[i](x)
-            x = F.relu(x)  #  使用ReLU激活函数
-        x = self.layers[-1](x)  #  最后一层不使用激活函数
+        dims = [latent_size + 3] + dims + [1]
+
+        self.num_layers = len(dims)
+        self.norm_layers = norm_layers
+        self.latent_in = latent_in
+        self.latent_dropout = latent_dropout
+        if self.latent_dropout:
+            self.lat_dp = nn.Dropout(0.2)
+
+        self.xyz_in_all = xyz_in_all
+        self.weight_norm = weight_norm
+
+        for layer in range(0, self.num_layers - 1):
+            if layer + 1 in latent_in:
+                out_dim = dims[layer + 1] - dims[0]
+            else:
+                out_dim = dims[layer + 1]
+                if self.xyz_in_all and layer != self.num_layers - 2:
+                    out_dim -= 3
+
+            if weight_norm and layer in self.norm_layers:
+                setattr(
+                    self,
+                    "lin" + str(layer),
+                    nn.utils.weight_norm(nn.Linear(dims[layer], out_dim)),
+                )
+            else:
+                setattr(self, "lin" + str(layer), nn.Linear(dims[layer], out_dim))
+
+            if (
+                (not weight_norm)
+                and self.norm_layers is not None
+                and layer in self.norm_layers
+            ):
+                setattr(self, "bn" + str(layer), nn.LayerNorm(out_dim))
+
+        self.use_tanh = use_tanh
+        if use_tanh:
+            self.tanh = nn.Tanh()
+        self.relu = nn.ReLU()
+
+        self.dropout_prob = dropout_prob
+        self.dropout = dropout
+        self.th = nn.Tanh()
+
+    # input: N x (L+3)
+    def forward(self, input):
+        xyz = input[:, -3:]
+
+        if input.shape[1] > 3 and self.latent_dropout:
+            latent_vecs = input[:, :-3]
+            latent_vecs = F.dropout(latent_vecs, p=0.2, training=self.training)
+            x = torch.cat([latent_vecs, xyz], 1)
+        else:
+            x = input
+
+        for layer in range(0, self.num_layers - 1):
+            lin = getattr(self, "lin" + str(layer))
+            if layer in self.latent_in:
+                x = torch.cat([x, input], 1)
+            elif layer != 0 and self.xyz_in_all:
+                x = torch.cat([x, xyz], 1)
+            x = lin(x)
+            # last layer Tanh
+            if layer == self.num_layers - 2 and self.use_tanh:
+                x = self.tanh(x)
+            if layer < self.num_layers - 2:
+                if (
+                    self.norm_layers is not None
+                    and layer in self.norm_layers
+                    and not self.weight_norm
+                ):
+                    bn = getattr(self, "bn" + str(layer))
+                    x = bn(x)
+                x = self.relu(x)
+                if self.dropout is not None and layer in self.dropout:
+                    x = F.dropout(x, p=self.dropout_prob, training=self.training)
+
+        if hasattr(self, "th"):
+            x = self.th(x)
+
         return x
 
-if __name__ == "__main__":
-    #  ---  测试代码  ---
-    batch_size = 2
-    num_points = 64
-    input_dim = 3  #  x, y, z
+# if __name__ == "__main__":
+#     #  ---  测试代码  ---
+#     batch_size = 2
+#     num_points = 64
+#     input_dim = 3  #  x, y, z
 
-    #  创建一个随机输入
-    test_input = torch.randn(batch_size, num_points, input_dim)
+#     #  创建一个随机输入
+#     test_input = torch.randn(batch_size, num_points, input_dim)
 
-    #  创建一个MLP实例
-    model = MLP(input_dim=input_dim, hidden_dim=128, num_layers=4)
+#     #  创建一个MLP实例
+#     model = MLP(input_dim=input_dim, hidden_dim=128, num_layers=4)
 
-    #  前向传播
-    output = model(test_input)
+#     #  前向传播
+#     output = model(test_input)
 
-    #  打印输出形状
-    print("Input shape:", test_input.shape)
-    print("Output shape:", output.shape)  #  应该为 (batch_size, num_points, 1)
+#     #  打印输出形状
+#     print("Input shape:", test_input.shape)
+#     print("Output shape:", output.shape)  #  应该为 (batch_size, num_points, 1)

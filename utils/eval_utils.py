@@ -15,8 +15,8 @@ def create_grid(resolution):
         torch.Tensor: Grid points, shape (resolution^3, 3).
     """
     x = np.linspace(-0.5, 0.5, resolution)
-    y, z, x = np.meshgrid(x, x, x)
-    grid = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+    xx, yy, zz = np.meshgrid(x, x, x)
+    grid = np.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
     return torch.from_numpy(grid).float()
 
 
@@ -50,6 +50,19 @@ def reconstruct_mesh(model, grid_points, resolution, batch_size, device):
     print("SDF min:", sdf.min(), "SDF max:", sdf.max())
     sdf_median = np.median(sdf)
     vertices, faces, _, _ = measure.marching_cubes(sdf, level=0)  # level=0 extracts the zero-level set (surface)
-    mesh = trimesh.Mesh(vertices=vertices, faces=faces)
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     return mesh
 
+def test_on_training_points(model, dataloader, device):
+    """
+    用训练集上的点跑一遍模型，输出预测SDF的最大值和最小值。
+    """
+    model.eval()
+    all_sdf_pred = []
+    with torch.no_grad():
+        for batch in dataloader:
+            sdf_points = batch['sdf_points'].to(device)
+            sdf_pred = model(sdf_points)
+            all_sdf_pred.append(sdf_pred.cpu())
+    all_sdf_pred = torch.cat(all_sdf_pred, dim=0)
+    print("Predicted SDF min:", all_sdf_pred.min().item(), "max:", all_sdf_pred.max().item())
