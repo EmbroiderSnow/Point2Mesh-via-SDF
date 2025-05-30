@@ -1,14 +1,14 @@
 import torch
-import numpy as np
-from skimage import measure  # Marching Cubes
-from models.mlp import MLP  # 导入你的 MLP 模型
-from utils.eval_utils import *
+import json
 import argparse
 import os
-from pathlib import Path
 import datetime
 import logging
 import sys
+
+from pathlib import Path
+from models.mlp import MLP
+from utils.eval_utils import *
 from utils.data_loader import SDFDataset
 from torch.utils.data import DataLoader
 
@@ -37,7 +37,6 @@ if __name__ == '__main__':
     file_dir.mkdir(exist_ok=True)
     checkpoints_dir = file_dir.joinpath('checkpoints/')
     checkpoints_dir.mkdir(exist_ok=True)
-    os.system('cp %s %s' % (args.checkpoint, checkpoints_dir))
     log_dir = file_dir.joinpath('logs/')
     log_dir.mkdir(exist_ok=True)
 
@@ -54,41 +53,24 @@ if __name__ == '__main__':
     logger.info(args)
 
     # --- MODEL LOADING ---
-    config = {
-        "latent_size": 0,
-        "dims": [512] * 8,
-        "dropout": [2, 4, 6],
-        "dropout_prob": 0.2,
-        "norm_layers": [1, 2, 3, 4, 5, 6],
-        "latent_in": [8],
-        "weight_norm": True,
-        "xyz_in_all": True,
-        "use_tanh": False,
-        "latent_dropout": False
-    }
-    model = MLP(**config).to(device)  # Initialize the model
+    with open('models/config.json', 'r') as f:
+        config = json.load(f)
+    net_config = config['NetConfig']
+    num_shapes = config['ShapeNum']
+    latent_size = net_config['latent_size']
+    latent_codes = torch.nn.Embedding(num_shapes, latent_size).to(device)
+    model = MLP(**net_config).to(device)  # Initialize the model
     if args.checkpoint is not None:
         print('Load CheckPoint...')
         logger.info('Load CheckPoint')
         checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
         start_epoch = checkpoint['epoch']
         model.load_state_dict(checkpoint["model_state_dict"])
+        latent_codes.load_state_dict(checkpoint["latent_state_dict"])
     else:
         print('Please load Checkpoint to eval...')
         sys.exit(0)
         start_epoch = 0
-    
-    if args.test:
-        print('Test mode activated.')
-        logger.info('Test mode activated.')
-        # --- DATA LOADING ---
-        logger.info('Loading dataset ...')
-        DATA_PATH = './data'
-        # Considering that the dataset is too small, we use Leave-One-Out Cross-Validation to divide the dataset
-        DATASET = SDFDataset(DATA_PATH)
-        
-        trainDataLoader = DataLoader(DATASET, batch_size=1, shuffle=True, num_workers=4)
-        test_on_training_points(model, trainDataLoader, device)
 
     # --- EVAL ---
     logger.info('Start evaluating...')
@@ -101,14 +83,21 @@ if __name__ == '__main__':
     print('Creating 3D grid...')
     grid_points = create_grid(args.grid_resolution).to(device)
 
-    # Reconstruct mesh
-    logger.info('Reconstructing mesh...')
-    print('Reconstructing mesh...')
-    mesh = reconstruct_mesh(model, grid_points, args.grid_resolution, args.batch_size, device)
+    for shape_id in range(num_shapes):
+        # Reconstruct mesh
+        logger.info('Reconstructing mesh...')
+        print('Reconstructing mesh...')
+        with open('norm_params.json', 'r') as f:
+            norm_dict = json.load(f)
+        params = norm_dict[str(shape_id)]
+        center = np.array(params['center'])
+        scale = params['scale']
+        latent_code = latent_codes(torch.tensor([shape_id], device=device))  # [1, latent_size]
+        mesh = reconstruct_mesh(model, grid_points, args.grid_resolution, center, scale, args.batch_size, device, latent_code=latent_code)
 
-    # Save mesh
-    os.mkdir(args.output_path) if not os.path.exists(args.output_path) else None
-    output_file = os.path.join(args.output_path, "output.obj")
-    mesh.export(output_file)
-    logger.info(f"Reconstructed mesh saved to {output_file}")
-    print(f"Reconstructed mesh saved to {output_file}")
+        # Save mesh
+        os.makedirs(args.output_path, exist_ok=True)
+        output_file = os.path.join(args.output_path, f"output-{shape_id}.obj")
+        mesh.export(output_file)
+        logger.info(f"Reconstructed mesh saved to {output_file}")
+        print(f"Reconstructed mesh saved to {output_file}")

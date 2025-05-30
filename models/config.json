@@ -1,0 +1,24 @@
+{
+    "ShapeNum": 5,
+    "NetConfig": {
+        "latent_size": 256,
+        "dims": [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024],
+        "dropout": [2, 4],
+        "dropout_prob": 0.2,
+        "norm_layers": [1, 2],
+        "latent_in": [1, 4, 8],
+        "weight_norm": true,
+        "xyz_in_all": true,
+        "use_tanh": true,
+        "latent_dropout": false,
+        "softplus_beta": 100
+    } ,
+    "HyperParameter": {
+        "sample_num": 32768,
+        "surface_rate": 95,
+        "epsilon": 0.01,
+        "alpha": 0.5,
+        "grad_lambda": 8,
+        "latent_lambda": 1e-5
+    }
+}

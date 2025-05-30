@@ -2,21 +2,23 @@ import os
 import torch
 import time
 import datetime
-from pathlib import Path
+import json
+import logging
+import argparse
 import torch.optim as optim
+
+from pathlib import Path
 from torch.utils.data import DataLoader
 from models.mlp import MLP
 from utils.data_loader import SDFDataset
 from utils.train_utils import *
 from tqdm import tqdm
-import logging
-import argparse
 
 def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('Point2MeshSDF')
     parser.add_argument('--batchsize', type=int, default=1, help='batch size in training')
-    parser.add_argument('--epoch',  default=200, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch',  default=500, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
     parser.add_argument('--gpu', type=str, default='0', help='specify gpu device')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate of learning rate')
@@ -24,7 +26,6 @@ def parse_args():
     return parser.parse_args()
 
 def main(args):
-    args = parse_args()
 
     # --- SET DEVICE ---
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -71,25 +72,24 @@ def main(args):
         torch.cuda.manual_seed_all(seed)
 
     # --- MODEL LOADING ---
-    config = {
-        "latent_size": 0,
-        "dims": [512] * 8,
-        "dropout": [2, 4, 6],
-        "dropout_prob": 0.2,
-        "norm_layers": [1, 2, 3, 4, 5, 6],
-        "latent_in": [8],
-        "weight_norm": True,
-        "xyz_in_all": True,
-        "use_tanh": False,
-        "latent_dropout": False
-    }
-    model = MLP(**config).to(device)
+    with open('models/config.json', 'r') as f:
+        config = json.load(f)
+    logger.info(f"config: {config}")
+    net_config = config['NetConfig']
+    hyperparameter = config['HyperParameter']
+    model = MLP(**net_config).to(device)
+    num_shapes = len(DATASET)
+    latent_size = net_config['latent_size']
+    latent_codes = torch.nn.Embedding(num_shapes, latent_size).to(device)
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        list(model.parameters()) + list(latent_codes.parameters()),
         lr=args.learning_rate,
         betas=(0.9, 0.999),
         eps=1e-08,
         weight_decay=args.decay_rate
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5
     )
     # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.7)
     global_epoch = 0
@@ -101,61 +101,112 @@ def main(args):
     for epoch in range(args.epoch):
         print('Epoch %d (%d/%s):' % (global_epoch + 1, epoch + 1, args.epoch))
         logger.info('Epoch %d (%d/%s):' ,global_epoch + 1, epoch + 1, args.epoch)
+        loss_record = []
 
         for batch_id, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
-            # normals = data['normals'].to(device)
-            sdf_points = data['sdf_points'].clone().detach().requires_grad_(True).to(device)
-            sdf_values = data['sdf_values'].to(device)
-            sdf_grads = data['sdf_grads'].to(device)
+            sdf_points = data['sdf_points']
+            sdf_values = data['sdf_values'].view(1, -1, 1)
+            sdf_grads = data['sdf_grads']
+            shape_id = data['shape_id'].to(device)
+            B, N, _ = sdf_points.shape
+            
+            # --- SAMPLE ---
+            sample_num = hyperparameter['sample_num']
+            epsilon = hyperparameter['epsilon']
+            surface_rate = hyperparameter['surface_rate']
+            alpha = hyperparameter['alpha']
+            grad_lambda = hyperparameter['grad_lambda']
+            latent_lambda = hyperparameter['latent_lambda']
 
-            if batch_id == 0 and epoch == 0:
-                print("sdf_points min:", sdf_points.min().item(), "max:", sdf_points.max().item())
-                print("sdf_values min:", sdf_values.min().item(), "max:", sdf_values.max().item())
-                print("sdf_grads min:", sdf_grads.min().item(), "max:", sdf_grads.max().item())
-                print("sdf_values mean:", sdf_values.mean().item(), "median:", sdf_values.median().item())
+            surface_mask = (sdf_values.abs() < epsilon).squeeze()
+            if surface_mask.dim() == 1:
+                surface_mask = surface_mask.unsqueeze(0)
+
+            surface_indices = surface_mask.nonzero(as_tuple=True)
+            other_mask = ~surface_mask
+            other_indices = other_mask.nonzero(as_tuple=True)
+
+            num_surface = min(surface_indices[0].shape[0], sample_num * surface_rate // 100)
+            num_other = sample_num - num_surface
+
+            # Sample surface points
+            if num_surface > 0:
+                perm = torch.randperm(surface_indices[0].shape[0])[:num_surface]
+                sampled_surface = (surface_indices[0][perm], surface_indices[1][perm])
+            else:
+                sampled_surface = (torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long))
+
+            # Sample space points
+            if other_indices[0].shape[0] > 0:
+                perm = torch.randperm(other_indices[0].shape[0])[:num_other]
+                sampled_other = (other_indices[0][perm], other_indices[1][perm])
+            else:
+                sampled_other = (torch.tensor([], dtype=torch.long), torch.tensor([], dtype=torch.long))
+
+            # Concatenate
+            batch_idx = torch.cat([sampled_surface[0], sampled_other[0]])
+            point_idx = torch.cat([sampled_surface[1], sampled_other[1]])
+
+            sdf_points = sdf_points[batch_idx, point_idx, :].view(1, -1, 3).to(device)
+            sdf_values = sdf_values[batch_idx, point_idx, :].view(1, -1, 1).to(device)
+            sdf_grads = sdf_grads[batch_idx, point_idx, :].view(1, -1, 3).to(device)
+
+            sdf_points.requires_grad_(True)
+            B, N, _ = sdf_points.shape
+            
+            # Make input: concatenate latent code and points
+            latent_vec = latent_codes(shape_id)
+            latent_expand = latent_vec.unsqueeze(1).expand(-1, N, -1)
+            mlp_input = torch.cat([latent_expand, sdf_points], dim=2)
+            mlp_input = mlp_input.view(B * N, -1)
+            sdf_points = sdf_points.view(B * N, 3) 
+            sdf_values = sdf_values.view(B * N, 1)  
+            sdf_grads = sdf_grads.view(B * N, 3) 
 
             optimizer.zero_grad()
+            sdf_predicted = model(mlp_input)
 
-            if sdf_points.dim() == 3:
-                sdf_points = sdf_points.view(-1, 3)
-            sdf_predicted = model(sdf_points)
-            sdf_values = sdf_values.view(-1, 1)  # 变成 [16384, 1]
-            sdf_grads = sdf_grads.view(-1, 3)  # 变成 [16384, 3]
-            # print("sdf_predicted shape:", sdf_predicted.shape)
-            # print("sdf_values shape:", sdf_values.shape)
-            # print("sdf_predicted min:", sdf_predicted.min().item(), "max:", sdf_predicted.max().item())
-            grad_predicted = compute_sdf_gradient(sdf_points, sdf_predicted)
-            # print("grad_predicted shape:", grad_predicted.shape)
-            # print("sdf_grads shape:", sdf_grads.shape)
-            # sdf_loss_val = torch.mean((sdf_predicted - sdf_values) ** 2)
-            # grad_loss_val = torch.mean((grad_predicted - sdf_grads) ** 2)
-            # print(f"sdf_loss: {sdf_loss_val.item()}, grad_loss: {grad_loss_val.item()}")
-            loss = sdf_loss(sdf_predicted, sdf_values, grad_predicted, sdf_grads, lambda_param=0.01)
+            # Compute loss
+            mlp_input.requires_grad_(True)
+            grad_predicted = compute_sdf_gradient(mlp_input, sdf_predicted)
+            loss_dict = sdf_loss(
+                sdf_predicted= sdf_predicted,
+                sdf_gt=sdf_values,
+                grad_predicted=grad_predicted,
+                grad_gt=sdf_grads,
+                latent_vec=latent_vec,
+                alpha=alpha,  # alpha for sdf loss
+                lambda_param=grad_lambda,  # lambda for gradient loss
+                latent_lambda=latent_lambda,  # regularization for latent code
+                eps = epsilon
+            )
+            loss = loss_dict['total_loss']
+            sdf_loss_val = loss_dict['sdf_loss']
+            grad_loss_val = loss_dict['grad_loss']
+            latent_reg_val = loss_dict['latent_reg']
+            logger.info(f"sdf_loss: {sdf_loss_val.item()}, grad_loss: {grad_loss_val.item()}, latent_loss: {latent_reg_val.item()}")
+            loss_record.append(loss.item())
 
             loss.backward()
-            # for name, param in model.named_parameters():
-            #     if param.grad is not None:
-            #         print(f"{name} grad mean: {param.grad.abs().mean().item():.6e}, grad max: {param.grad.abs().max().item():.6e}")
-            #     else:
-            #         print(f"{name} grad is None")
             optimizer.step()
             global_step += 1
 
-        # scheduler.step()
+        mean_loss = sum(loss_record) / len(loss_record)
+        scheduler.step(mean_loss)
         
-        # --- TESTING ---
-        if loss < min_loss and epoch > 5:
-            min_loss = loss
+        # --- SAVING MODEL ---
+        if (mean_loss < min_loss and epoch > 5) or (epoch % 10 == 0):
+            min_loss = mean_loss
             logger.info('Saving model ...')
-            save_checkpoint(global_epoch + 1, loss, model, optimizer, checkpoints_dir, 'MLP')
+            save_checkpoint(global_epoch + 1, loss, model, latent_codes, optimizer, checkpoints_dir, 'MLP')
             print('Saving model ...')
 
-        print('\r Loss: %f' % loss.item())
-        logger.info('Loss: %.2f', loss.item())
+        print('\r Loss: %f' % mean_loss)
+        logger.info('Loss: %f', mean_loss)
         global_epoch += 1
     
     print("Min loss: ", min_loss)
-    logger.info('Min loss: %.2f', min_loss)
+    logger.info('Min loss: %f', min_loss)
     print('End of training ...')
     logger.info('End of training ...') 
 

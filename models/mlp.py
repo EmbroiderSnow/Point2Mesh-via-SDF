@@ -15,6 +15,7 @@ class MLP(nn.Module):
         xyz_in_all=None,
         use_tanh=False,
         latent_dropout=False,
+        softplus_beta = 1.0
     ):
         super(MLP, self).__init__()
 
@@ -60,7 +61,9 @@ class MLP(nn.Module):
         self.use_tanh = use_tanh
         if use_tanh:
             self.tanh = nn.Tanh()
-        self.relu = nn.ReLU()
+        # self.relu = nn.ReLU()
+        self.leaky_relu = nn.LeakyReLU()
+        self.softplus = nn.Softplus(beta=softplus_beta)
 
         self.dropout_prob = dropout_prob
         self.dropout = dropout
@@ -95,12 +98,12 @@ class MLP(nn.Module):
                 ):
                     bn = getattr(self, "bn" + str(layer))
                     x = bn(x)
-                x = self.relu(x)
+                x = self.softplus(x)
                 if self.dropout is not None and layer in self.dropout:
                     x = F.dropout(x, p=self.dropout_prob, training=self.training)
 
-        if hasattr(self, "th"):
-            x = self.th(x)
+        # if hasattr(self, "th"):
+        #     x = self.th(x)
 
         return x
 

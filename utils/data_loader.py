@@ -1,12 +1,27 @@
 import os
 import numpy as np
 import torch
+import json
 from torch.utils.data import Dataset, DataLoader
 
 class SDFDataset(Dataset):
     def __init__(self, data_dir):
         self.data_dir = data_dir
         self.uids = sorted(os.listdir(data_dir))
+        self.norm_dict = dict()
+        for idx, uid in enumerate(self.uids):
+            pointcloud_path = os.path.join(self.data_dir, uid, 'pointcloud.npz')
+            pointcloud_data = np.load(pointcloud_path)
+            points = torch.from_numpy(pointcloud_data['points']).float()
+            center = points.mean(dim=0, keepdim=True)
+            scale = (points.max(dim=0)[0] - points.min(dim=0)[0]).max()
+            self.norm_dict[idx] = {
+                "center": center.squeeze().tolist(),
+                "scale": scale.item()
+            }
+        # 一次性写入
+        with open('norm_params.json', 'w') as f:
+            json.dump(self.norm_dict, f)
 
     def __len__(self):
         return len(self.uids)
@@ -25,25 +40,15 @@ class SDFDataset(Dataset):
         sdf_values = torch.from_numpy(sdf_data['sdf']).float()
         sdf_grads = torch.from_numpy(sdf_data['grad']).float()
 
-        # 随机采样 SDF 
-        num_samples = sdf_points.shape[0]
-        sample_num = min(16384, num_samples)
-        pos_indices = (sdf_values > 0).nonzero(as_tuple=True)[0]
-        neg_indices = (sdf_values < 0).nonzero(as_tuple=True)[0]
-        num_pos = min(len(pos_indices), sample_num // 2)
-        num_neg = min(len(neg_indices), sample_num // 2)
-        sampled_pos = pos_indices[torch.randperm(len(pos_indices))[:num_pos]]
-        sampled_neg = neg_indices[torch.randperm(len(neg_indices))[:num_neg]]
-        indices = torch.cat([sampled_pos, sampled_neg])
-        # 若数量不足，再随机补齐
-        if len(indices) < sample_num:
-            rest = torch.randperm(num_samples)[:sample_num - len(indices)]
-            indices = torch.cat([indices, rest])
-        sdf_points = sdf_points[indices]
-        sdf_values = sdf_values[indices]
-        sdf_grads = sdf_grads[indices]
+        center = torch.tensor(self.norm_dict[idx]['center'])
+        scale = self.norm_dict[idx]['scale']
+
+        sdf_points = (sdf_points - center) / scale
+        sdf_values = sdf_values / scale
         
         return {
+            'uid': uid,
+            'shape_id': idx,
             'pointcloud': points,
             'normals': normals,
             'sdf_points': sdf_points,

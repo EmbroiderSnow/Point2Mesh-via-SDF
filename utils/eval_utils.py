@@ -19,8 +19,22 @@ def create_grid(resolution):
     grid = np.stack([xx, yy, zz], axis=-1).reshape(-1, 3)
     return torch.from_numpy(grid).float()
 
+def concat_latent_and_grid(latent_code, grid_points):
+    """
+    Concatenates the latent code with the grid points.
 
-def reconstruct_mesh(model, grid_points, resolution, batch_size, device):
+    Args:
+        latent_code (torch.Tensor): Latent code, shape (latent_size,).
+        grid_points (torch.Tensor): 3D grid points, shape (M, 3).
+    Returns:
+        torch.Tensor: Concatenated tensor, shape (M, latent_size + 3).
+    """
+    if latent_code.dim() == 1:
+        latent_code = latent_code.unsqueeze(0)  # [1, latent_size]
+    latent_expand = latent_code.expand(grid_points.shape[0], -1)  # [M, latent_size]
+    return torch.cat([latent_expand, grid_points], dim=1)  # [M, latent_size+3]
+
+def reconstruct_mesh(model, grid_points, resolution, center, scale, batch_size, device, latent_code=None):
     """
     Reconstructs a mesh from the predicted SDF values using Marching Cubes.
 
@@ -40,6 +54,8 @@ def reconstruct_mesh(model, grid_points, resolution, batch_size, device):
     with torch.no_grad():  # Disable gradient calculation
         for i in range(0, grid_points.shape[0], batch_size):
             batch = grid_points[i:i + batch_size].to(device)
+            if latent_code is not None:
+                batch = concat_latent_and_grid(latent_code.to(device), batch)
             sdf_batch = model(batch).cpu()  # Predict SDF values
             sdf.append(sdf_batch)
     sdf = torch.cat(sdf, dim=0).numpy()
@@ -50,19 +66,8 @@ def reconstruct_mesh(model, grid_points, resolution, batch_size, device):
     print("SDF min:", sdf.min(), "SDF max:", sdf.max())
     sdf_median = np.median(sdf)
     vertices, faces, _, _ = measure.marching_cubes(sdf, level=0)  # level=0 extracts the zero-level set (surface)
+    voxel_size = 1.0 / (resolution - 1)
+    vertices = vertices * voxel_size - 0.5
+    vertices = vertices * scale + center
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     return mesh
-
-def test_on_training_points(model, dataloader, device):
-    """
-    用训练集上的点跑一遍模型，输出预测SDF的最大值和最小值。
-    """
-    model.eval()
-    all_sdf_pred = []
-    with torch.no_grad():
-        for batch in dataloader:
-            sdf_points = batch['sdf_points'].to(device)
-            sdf_pred = model(sdf_points)
-            all_sdf_pred.append(sdf_pred.cpu())
-    all_sdf_pred = torch.cat(all_sdf_pred, dim=0)
-    print("Predicted SDF min:", all_sdf_pred.min().item(), "max:", all_sdf_pred.max().item())
