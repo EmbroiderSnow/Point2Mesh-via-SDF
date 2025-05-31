@@ -18,7 +18,7 @@ def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('Point2MeshSDF')
     parser.add_argument('--batchsize', type=int, default=1, help='batch size in training')
-    parser.add_argument('--epoch',  default=500, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch',  default=200, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
     parser.add_argument('--gpu', type=str, default='0', help='specify gpu device')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate of learning rate')
@@ -77,13 +77,14 @@ def main(args):
     logger.info(f"config: {config}")
     net_config = config['NetConfig']
     hyperparameter = config['HyperParameter']
+    lr = hyperparameter['learning_rate']
     model = MLP(**net_config).to(device)
     num_shapes = len(DATASET)
     latent_size = net_config['latent_size']
     latent_codes = torch.nn.Embedding(num_shapes, latent_size).to(device)
     optimizer = torch.optim.Adam(
         list(model.parameters()) + list(latent_codes.parameters()),
-        lr=args.learning_rate,
+        lr=lr,
         betas=(0.9, 0.999),
         eps=1e-08,
         weight_decay=args.decay_rate

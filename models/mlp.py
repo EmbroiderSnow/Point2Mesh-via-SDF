@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .encoder import FourierFeatureTransform
+
 class MLP(nn.Module):
     def __init__(
         self,
@@ -15,16 +17,27 @@ class MLP(nn.Module):
         xyz_in_all=None,
         use_tanh=False,
         latent_dropout=False,
-        softplus_beta = 1.0
+        softplus_beta = 1.0,
+        use_position_encoding = False,
+        fourier_mapping_size = 0,
+        fourier_scale = 1.0,
     ):
         super(MLP, self).__init__()
 
-        def make_sequence():
-            return []
+        if use_position_encoding:
+            self.position_encoder = FourierFeatureTransform(
+                num_input_channels=3,
+                mapping_size=fourier_mapping_size,
+                scale=fourier_scale
+            )
+            encoded_xyz_dim = fourier_mapping_size * 2
+            input_dim = latent_size + encoded_xyz_dim
+        else:
+            input_dim = latent_size + 3
 
-        dims = [latent_size + 3] + dims + [1]
-
-        self.num_layers = len(dims)
+        dims = [input_dim] + dims + [1]
+        self.use_position_encoding = use_position_encoding
+        self.num_layers = len(dims) 
         self.norm_layers = norm_layers
         self.latent_in = latent_in
         self.latent_dropout = latent_dropout
@@ -36,7 +49,7 @@ class MLP(nn.Module):
 
         for layer in range(0, self.num_layers - 1):
             if layer + 1 in latent_in:
-                out_dim = dims[layer + 1] - dims[0]
+                out_dim = dims[layer + 1] - latent_size
             else:
                 out_dim = dims[layer + 1]
                 if self.xyz_in_all and layer != self.num_layers - 2:
@@ -61,30 +74,31 @@ class MLP(nn.Module):
         self.use_tanh = use_tanh
         if use_tanh:
             self.tanh = nn.Tanh()
-        # self.relu = nn.ReLU()
-        self.leaky_relu = nn.LeakyReLU()
         self.softplus = nn.Softplus(beta=softplus_beta)
 
         self.dropout_prob = dropout_prob
         self.dropout = dropout
         self.th = nn.Tanh()
 
-    # input: N x (L+3)
     def forward(self, input):
         xyz = input[:, -3:]
+        latent_vecs = input[:, :-3] if input.shape[1] > 3 else None
 
-        if input.shape[1] > 3 and self.latent_dropout:
-            latent_vecs = input[:, :-3]
-            latent_vecs = F.dropout(latent_vecs, p=0.2, training=self.training)
-            x = torch.cat([latent_vecs, xyz], 1)
+        if latent_vecs is not None and self.use_position_encoding:
+            encoded_xyz = self.position_encoder(xyz)
+            if self.latent_dropout:
+                latent_vecs = F.dropout(latent_vecs, p=0.2, training=self.training)
+            x = torch.cat([latent_vecs, encoded_xyz], 1)
+            # Regard the concatenation of latent_vec and encoded_xyz as mlp input
+            input = x
         else:
             x = input
 
         for layer in range(0, self.num_layers - 1):
             lin = getattr(self, "lin" + str(layer))
             if layer in self.latent_in:
-                x = torch.cat([x, input], 1)
-            elif layer != 0 and self.xyz_in_all:
+                x = torch.cat([x, latent_vecs], 1)
+            elif layer != 0 and self.xyz_in_all:                                
                 x = torch.cat([x, xyz], 1)
             x = lin(x)
             # last layer Tanh
@@ -102,26 +116,4 @@ class MLP(nn.Module):
                 if self.dropout is not None and layer in self.dropout:
                     x = F.dropout(x, p=self.dropout_prob, training=self.training)
 
-        # if hasattr(self, "th"):
-        #     x = self.th(x)
-
         return x
-
-# if __name__ == "__main__":
-#     #  ---  测试代码  ---
-#     batch_size = 2
-#     num_points = 64
-#     input_dim = 3  #  x, y, z
-
-#     #  创建一个随机输入
-#     test_input = torch.randn(batch_size, num_points, input_dim)
-
-#     #  创建一个MLP实例
-#     model = MLP(input_dim=input_dim, hidden_dim=128, num_layers=4)
-
-#     #  前向传播
-#     output = model(test_input)
-
-#     #  打印输出形状
-#     print("Input shape:", test_input.shape)
-#     print("Output shape:", output.shape)  #  应该为 (batch_size, num_points, 1)
