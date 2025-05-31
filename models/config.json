@@ -14,15 +14,15 @@
         "softplus_beta": 100,
         "use_position_encoding": true,
         "fourier_mapping_size": 256,
-        "fourier_scale": 3.0
+        "fourier_scale": 1.0
     } ,
     "HyperParameter": {
         "learning_rate": 1e-4,
         "sample_num": 32768,
         "surface_rate": 95,
-        "epsilon": 0.02,
+        "epsilon": 0.01,
         "alpha": 1.0,
-        "grad_lambda": 12,
+        "grad_lambda": 20,
         "latent_lambda": 1e-5
     }
 }

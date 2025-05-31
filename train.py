@@ -23,6 +23,7 @@ def parse_args():
     parser.add_argument('--gpu', type=str, default='0', help='specify gpu device')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate of learning rate')
     parser.add_argument('--model_name', default='Point2MeshSDF', help='model name')
+    parser.add_argument('--config',type=str, default='models/config.json', help='config file')
     return parser.parse_args()
 
 def main(args):
@@ -72,7 +73,7 @@ def main(args):
         torch.cuda.manual_seed_all(seed)
 
     # --- MODEL LOADING ---
-    with open('models/config.json', 'r') as f:
+    with open(args.config, 'r') as f:
         config = json.load(f)
     logger.info(f"config: {config}")
     net_config = config['NetConfig']
