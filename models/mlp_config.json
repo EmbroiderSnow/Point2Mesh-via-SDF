@@ -5,7 +5,7 @@
         "dims": [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024],
         "dropout": [2, 4],
         "dropout_prob": 0.2,
-        "norm_layers": [],
+        "norm_layers": [1, 2],
         "latent_in": [1, 4, 8],
         "weight_norm": true,
         "xyz_in_all": true,

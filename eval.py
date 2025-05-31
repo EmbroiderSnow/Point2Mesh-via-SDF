@@ -17,6 +17,7 @@ def parse_args():
     parser.add_argument('--checkpoint', type=str, default=None, help='checkpoint')
     parser.add_argument("--grid_resolution", type=int, default=128, help="Resolution of the 3D grid for Marching Cubes")
     parser.add_argument("--test", type=bool, default=False, help="Test mode")
+    parser.add_argument('--config', type=str, default='model/config.json', help='Configuration file')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -34,7 +35,7 @@ if __name__ == '__main__':
     output_dir = Path(str(file_dir) + '/output')
 
     # --- MODEL LOADING ---
-    with open('models/config.json', 'r') as f:
+    with open(args.config, 'r') as f:
         config = json.load(f)
     net_config = config['NetConfig']
     num_shapes = config['ShapeNum']
@@ -54,6 +55,8 @@ if __name__ == '__main__':
 
     # --- EVAL ---
     print('Start evaluating...')
+    parameter_num = sum(p.numel() for p in model.parameters())
+    print('Parameter number of the model: ', parameter_num)
 
     model.eval()
 
